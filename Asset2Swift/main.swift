@@ -35,7 +35,7 @@ struct GenerateCommand: ParsableCommand {
             $0.hasSuffix(suffix)
         }.map { path -> String in
             return String(path.replacingOccurrences(of: "/", with: "_").dropLast(suffix.count))
-        }.map { name in
+        }.sorted().map { name in
             return """
             static var \(name): UIImage { return UIImage(named: "\(name)")! }
             """
@@ -62,22 +62,18 @@ struct GenerateCommand: ParsableCommand {
 
         return try fileManager.subpathsOfDirectory(atPath: colorAssets).filter {
             $0.contains(suffix) && $0.hasSuffix(fileSuffix)
-        }.compactMap { path in
-            guard let fileData = fileManager.contents(atPath: colorAssets.hasSuffix("/") ? (colorAssets + path) : (colorAssets + "/" + path)) else {
-                print("cannot find file")
+        }.map { path -> (String, Substring) in
+            return (path, path.split(separator: "/").dropLast().joined(separator: "_").dropLast(suffix.count))
+        }.sorted {
+            $0.1 < $1.1
+        }.compactMap { path, name in
+            guard let fileData = fileManager.contents(atPath: colorAssets.hasSuffix("/") ? (colorAssets + path) : (colorAssets + "/" + path)),
+                let colorContents = try? jsonDecoder.decode(ColorContents.self, from: fileData) else {
                 return nil
             }
-            do {
-                let colorContents = try jsonDecoder.decode(ColorContents.self, from: fileData)
-                let name = path.split(separator: "/").dropLast().joined(separator: "_").dropLast(suffix.count)
-
-                return """
-                static var \(name): UIColor { return UIColor(named: "\(name)")! } // \(colorDescription(for: colorContents))
-                """
-            } catch {
-                print(error)
-                return nil
-            }
+            return """
+            static var \(name): UIColor { return UIColor(named: "\(name)")! } // \(colorDescription(for: colorContents))
+            """
         }
     }
 
