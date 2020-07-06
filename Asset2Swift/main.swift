@@ -28,23 +28,41 @@ struct GenerateCommand: ParsableCommand {
     @Option(name: .shortAndLong, help: "the output swift file")
     var output: String
 
+    private func split(values: [(String, String)]) -> [String] {
+        return values.reduce(into: [String: [String]]()) { result, current in
+            let (path, name) = current
+            if var array = result[path] {
+                let index = array.firstIndex(where: { $0 >= name }) ?? array.endIndex
+                array.insert(name, at: index)
+                result[path] = array
+            } else {
+                result[path] = [name]
+            }
+        }.sorted {
+            $0.key < $1.key
+        }.flatMap { key, values -> [String] in
+            let keyDescription = key.isEmpty ? "file" : key
+            return ["// Assets in \(keyDescription)"] + values + [""]
+        }.dropLast()
+    }
+
     private func imageContent(for imageAssets: String, in fileManager: FileManager) throws -> [String] {
         let suffix = ".imageset"
 
-        return try fileManager.subpathsOfDirectory(atPath: imageAssets).filter {
+        let result = try fileManager.subpathsOfDirectory(atPath: imageAssets).filter {
             $0.hasSuffix(suffix)
-        }.map { path -> String in
-            return String(path.replacingOccurrences(of: "/", with: "_").dropLast(suffix.count))
-        }.sorted().map { name in
-            return """
-            static var \(name): UIImage { return UIImage(named: "\(name)")! }
-            """
+        }.map { path -> (String, String) in
+            var splitted = path.split(separator: "/")
+            let name = splitted.removeLast().dropLast(suffix.count)
+            return (splitted.reduce("", { $0.isEmpty ? String($1) : $1.capitalized }), "static var \(name): UIImage { return UIImage(named: \"\(name)\")! }")
         }
+
+        return split(values: result)
     }
 
-    private func colorDescription(for colorContents: ColorContents) -> String {
+    private func colorDescription(for colorContents: ColorContents) -> String? {
         if colorContents.colors.count == 0 {
-            return "No descriptions"
+            return nil
         } else if colorContents.colors.count == 1 {
             return colorContents.colors.first!.color.rgbComponents.hexDescriptions
         } else {
@@ -60,21 +78,22 @@ struct GenerateCommand: ParsableCommand {
 
         let jsonDecoder = JSONDecoder()
 
-        return try fileManager.subpathsOfDirectory(atPath: colorAssets).filter {
+        let result = try fileManager.subpathsOfDirectory(atPath: colorAssets).filter {
             $0.contains(suffix) && $0.hasSuffix(fileSuffix)
-        }.map { path -> (String, Substring) in
-            return (path, path.split(separator: "/").dropLast().joined(separator: "_").dropLast(suffix.count))
-        }.sorted {
-            $0.1 < $1.1
-        }.compactMap { path, name in
+        }.map { path -> (String, String, String) in
+            var splitted = path.split(separator: "/")
+            splitted.removeLast()
+            let name = splitted.removeLast().dropLast(suffix.count)
+            return (path, splitted.reduce("", { $0.isEmpty ? String($1) : $1.capitalized }), "static var \(name): UIColor { return UIColor(named: \"\(name)\")! }")
+        }.compactMap { path, folderDescription, description -> (String, String)? in
             guard let fileData = fileManager.contents(atPath: colorAssets.hasSuffix("/") ? (colorAssets + path) : (colorAssets + "/" + path)),
                 let colorContents = try? jsonDecoder.decode(ColorContents.self, from: fileData) else {
                 return nil
             }
-            return """
-            static var \(name): UIColor { return UIColor(named: "\(name)")! } // \(colorDescription(for: colorContents))
-            """
+            return (folderDescription, description + (colorDescription(for: colorContents).flatMap { " // \($0)" } ?? ""))
         }
+
+        return split(values: result)
     }
 
     private func replace(placeholderRange: Range<String.Index>, with stringGroup: [String], in templateString: inout String) {
@@ -83,7 +102,10 @@ struct GenerateCommand: ParsableCommand {
         if let newLineRange = templateString.rangeOfCharacter(from: .newlines, options: .backwards, range: templateString.startIndex ..< placeholderRange.lowerBound) {
             let prefix = String(templateString[newLineRange.upperBound ..< placeholderRange.lowerBound])
             imageString = stringGroup.map {
-                prefix + $0
+                if $0.isEmpty {
+                    return $0
+                }
+                return prefix + $0
             }.joined(separator: "\n")
             replacedRange = newLineRange.upperBound ..< placeholderRange.upperBound
         } else {
