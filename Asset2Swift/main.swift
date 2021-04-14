@@ -46,7 +46,8 @@ struct GenerateCommand: ParsableCommand {
         }.dropLast()
     }
 
-    private func imageContent(for imageAssets: String, in fileManager: FileManager) throws -> [String] {
+    private static let defaultImagePattern = "static var $IMAGENAME: UIImage { return UIImage(named: \"$IMAGENAME\")! }"
+    private func imageContent(for imageAssets: String, in fileManager: FileManager, withPattern pattern: String = GenerateCommand.defaultImagePattern) throws -> [String] {
         let suffix = ".imageset"
 
         let result = try fileManager.subpathsOfDirectory(atPath: imageAssets).filter {
@@ -54,7 +55,7 @@ struct GenerateCommand: ParsableCommand {
         }.map { path -> (String, String) in
             var splitted = path.split(separator: "/")
             let name = splitted.removeLast().dropLast(suffix.count)
-            return (splitted.reduce("", { $0.isEmpty ? String($1) : $1.capitalized }), "static var \(name): UIImage { return UIImage(named: \"\(name)\")! }")
+            return (splitted.reduce("", { $0.isEmpty ? String($1) : $1.capitalized }), pattern.replacingOccurrences(of: "$IMAGENAME", with: name))
         }
 
         return split(values: result)
@@ -72,21 +73,22 @@ struct GenerateCommand: ParsableCommand {
         }
     }
 
-    private func colorContent(for colorAssets: String, in fileManager: FileManager) throws -> [String] {
+    private static let defaultColorPattern = "static var $COLORNAME: UIColor { return UIColor(named: \"$COLORNAME\")! }"
+    private func colorContent(for colorAssetsPath: String, in fileManager: FileManager, withPattern pattern: String = GenerateCommand.defaultColorPattern) throws -> [String] {
         let suffix = ".colorset"
         let fileSuffix = ".json"
 
         let jsonDecoder = JSONDecoder()
 
-        let result = try fileManager.subpathsOfDirectory(atPath: colorAssets).filter {
+        let result = try fileManager.subpathsOfDirectory(atPath: colorAssetsPath).filter {
             $0.contains(suffix) && $0.hasSuffix(fileSuffix)
         }.map { path -> (String, String, String) in
             var splitted = path.split(separator: "/")
             splitted.removeLast()
             let name = splitted.removeLast().dropLast(suffix.count)
-            return (path, splitted.reduce("", { $0.isEmpty ? String($1) : $1.capitalized }), "static var \(name): UIColor { return UIColor(named: \"\(name)\")! }")
+            return (path, splitted.reduce("", { $0.isEmpty ? String($1) : $1.capitalized }), pattern.replacingOccurrences(of: "$COLORNAME", with: name))
         }.compactMap { path, folderDescription, description -> (String, String)? in
-            guard let fileData = fileManager.contents(atPath: colorAssets.hasSuffix("/") ? (colorAssets + path) : (colorAssets + "/" + path)),
+            guard let fileData = fileManager.contents(atPath: colorAssetsPath.hasSuffix("/") ? (colorAssetsPath + path) : (colorAssetsPath + "/" + path)),
                 let colorContents = try? jsonDecoder.decode(ColorContents.self, from: fileData) else {
                 return nil
             }
@@ -116,6 +118,20 @@ struct GenerateCommand: ParsableCommand {
         templateString.replaceSubrange(replacedRange, with: imageString)
     }
 
+    func getPatterParameters(inString string: String, withPlaceholder placeholder: String) -> (String, Range<String.Index>)? {
+        if let imageNamePatternRange = string.range(of: placeholder) {
+            let newLineStart = string[..<imageNamePatternRange.lowerBound].lastIndex(where: { $0.isNewline }) ?? string.startIndex
+            let newLineEnd = string[imageNamePatternRange.upperBound...].firstIndex(where: { $0.isNewline }) ?? string.endIndex
+            let codeStart = string[newLineStart..<newLineEnd].firstIndex(where: { !$0.isWhitespace })!
+            let codeEnd = string.index(after: string[newLineStart..<newLineEnd].lastIndex(where: { !$0.isWhitespace })!)
+
+            let pattern = String(string[codeStart..<codeEnd])
+
+            return (pattern, codeStart..<codeEnd)
+        }
+        return nil
+    }
+
     func run() throws {
         let manager = FileManager()
 
@@ -128,12 +144,18 @@ struct GenerateCommand: ParsableCommand {
             throw Error.fileNoteAvailable(output)
         }
 
-        if let imageTemplateRange = templateString.range(of: "$IMAGES") {
+        if let (pattern, imageNamePatternRange) = getPatterParameters(inString: templateString, withPlaceholder: "$IMAGENAME") {
+            let imageContents = try imageAssets.flatMap { try imageContent(for: $0, in: manager, withPattern: pattern) } ?? []
+            replace(placeholderRange: imageNamePatternRange, with: imageContents, in: &templateString)
+        } else if let imageTemplateRange = templateString.range(of: "$IMAGES") {
             let imageContents = try imageAssets.flatMap { try imageContent(for: $0, in: manager) } ?? []
             replace(placeholderRange: imageTemplateRange, with: imageContents, in: &templateString)
         }
 
-        if let colorTemplateRange = templateString.range(of: "$COLORS") {
+        if let (pattern, colorNamePatternRange) = getPatterParameters(inString: templateString, withPlaceholder: "$COLORNAME") {
+            let colorContents = try colorAssets.flatMap { try colorContent(for: $0, in: manager, withPattern: pattern) } ?? []
+            replace(placeholderRange: colorNamePatternRange, with: colorContents, in: &templateString)
+        } else if let colorTemplateRange = templateString.range(of: "$COLORS") {
             let colorContents = try colorAssets.flatMap { try colorContent(for: $0, in: manager) } ?? []
             replace(placeholderRange: colorTemplateRange, with: colorContents, in: &templateString)
         }
